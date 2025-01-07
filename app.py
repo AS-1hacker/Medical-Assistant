@@ -4,10 +4,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import sqlite3
 import os
+import logging
 from functools import wraps
 
 app = Flask(__name__)
-CORS(app)  # إضافة دعم CORS
+CORS(app)
 app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key')
 
 # تكوين مجلد الصور
@@ -107,16 +108,44 @@ medical_responses = {
 }
 
 def get_db():
-    db = sqlite3.connect('database.db')
-    db.row_factory = sqlite3.Row
-    return db
+    try:
+        db = sqlite3.connect('database.db')
+        db.row_factory = sqlite3.Row
+        return db
+    except sqlite3.Error as e:
+        app.logger.error(f"Database error: {e}")
+        return None
 
 def init_db():
-    with app.app_context():
-        db = get_db()
-        with open('schema.sql', mode='r') as f:
-            db.cursor().executescript(f.read())
-        db.commit()
+    try:
+        with app.app_context():
+            db = get_db()
+            if db:
+                with open('schema.sql', mode='r') as f:
+                    db.cursor().executescript(f.read())
+                db.commit()
+                app.logger.info("Database initialized successfully")
+    except Exception as e:
+        app.logger.error(f"Error initializing database: {e}")
+
+@app.before_first_request
+def setup():
+    # إنشاء المجلدات المطلوبة
+    if not os.path.exists(UPLOAD_FOLDER):
+        os.makedirs(UPLOAD_FOLDER)
+    
+    # تهيئة قاعدة البيانات
+    if not os.path.exists('database.db'):
+        init_db()
+
+@app.errorhandler(500)
+def internal_error(error):
+    app.logger.error(f'Server Error: {error}')
+    return render_template('error.html', error=error), 500
+
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template('error.html', error='الصفحة غير موجودة'), 404
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -269,9 +298,9 @@ def upload_image():
     return jsonify({'error': 'نوع الملف غير مسموح به'}), 400
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    app.logger.setLevel(logging.INFO)
     if not os.path.exists('database.db'):
         init_db()
-    if not os.path.exists(UPLOAD_FOLDER):
-        os.makedirs(UPLOAD_FOLDER)
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
