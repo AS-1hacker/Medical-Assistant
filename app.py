@@ -1,20 +1,36 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
 from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-import sqlite3
 import os
-import logging
 from functools import wraps
+import logging
 
 app = Flask(__name__)
 CORS(app)
-app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key')
 
-# تكوين مجلد الصور
-UPLOAD_FOLDER = 'uploads'
+# تكوين التطبيق
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['UPLOAD_FOLDER'] = 'uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+# إعداد قاعدة البيانات
+db = SQLAlchemy(app)
+
+# نماذج قاعدة البيانات
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(120), nullable=False)
+
+class Message(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, server_default=db.func.now())
 
 # قاموس معلومات الأدوية
 medications_info = {
@@ -65,19 +81,7 @@ medical_responses = {
     2. تجنب الأطعمة الحارة والدهنية
     3. شرب الماء بكميات كافية
     4. تجنب الاستلقاء مباشرة بعد الأكل
-
-    العلاجات المقترحة:
-    1. أدوية مضادات الحموضة
-    2. شاي البابونج أو النعناع
-    3. بروبيوتيك لتحسين الهضم
-    4. تناول الزنجبيل الطازج
-
-    متى يجب زيارة الطبيب:
-    - إذا استمر الألم لأكثر من يومين
-    - إذا كان الألم شديداً
-    - إذا صاحب الألم قيء أو إسهال
     """,
-    
     'صداع': """
     بخصوص الصداع، إليك المعلومات الضرورية:
 
@@ -92,63 +96,144 @@ medical_responses = {
     2. شرب الماء بكميات كافية
     3. تجنب الضوء القوي والضوضاء
     4. تدليك خفيف للرأس والرقبة
-
-    العلاجات المقترحة:
-    1. مسكنات الألم مثل:
-       - باراسيتامول (بانادول)
-       - ايبوبروفين (بروفين)
-    2. كمادات باردة أو دافئة
-    3. زيوت عطرية للتدليك
-
-    متى تزور الطبيب:
-    - صداع شديد ومفاجئ
-    - صداع مصحوب بحمى
-    - صداع يمنعك من ممارسة حياتك اليومية
     """
 }
 
-def get_db():
-    try:
-        db = sqlite3.connect('database.db')
-        db.row_factory = sqlite3.Row
-        return db
-    except sqlite3.Error as e:
-        app.logger.error(f"Database error: {e}")
-        return None
-
-def init_db():
-    try:
-        with app.app_context():
-            db = get_db()
-            if db:
-                with open('schema.sql', mode='r') as f:
-                    db.cursor().executescript(f.read())
-                db.commit()
-                app.logger.info("Database initialized successfully")
-    except Exception as e:
-        app.logger.error(f"Error initializing database: {e}")
-
 @app.before_first_request
-def setup():
+def create_tables():
     # إنشاء المجلدات المطلوبة
-    if not os.path.exists(UPLOAD_FOLDER):
-        os.makedirs(UPLOAD_FOLDER)
+    if not os.path.exists(app.config['UPLOAD_FOLDER']):
+        os.makedirs(app.config['UPLOAD_FOLDER'])
     
-    # تهيئة قاعدة البيانات
-    if not os.path.exists('database.db'):
-        init_db()
-
-@app.errorhandler(500)
-def internal_error(error):
-    app.logger.error(f'Server Error: {error}')
-    return render_template('error.html', error=error), 500
-
-@app.errorhandler(404)
-def not_found_error(error):
-    return render_template('error.html', error='الصفحة غير موجودة'), 404
+    # إنشاء جداول قاعدة البيانات
+    db.create_all()
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/')
+@login_required
+def index():
+    return render_template('index.html', username=session.get('username'))
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        if not username or not password:
+            flash('جميع الحقول مطلوبة')
+            return redirect(url_for('register'))
+        
+        if User.query.filter_by(username=username).first():
+            flash('اسم المستخدم موجود بالفعل')
+            return redirect(url_for('register'))
+        
+        user = User(
+            username=username,
+            password=generate_password_hash(password)
+        )
+        db.session.add(user)
+        db.session.commit()
+        
+        flash('تم إنشاء الحساب بنجاح')
+        return redirect(url_for('login'))
+    
+    return render_template('register.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        user = User.query.filter_by(username=username).first()
+        
+        if not user or not check_password_hash(user.password, password):
+            flash('اسم المستخدم أو كلمة المرور غير صحيحة')
+            return redirect(url_for('login'))
+        
+        session['user_id'] = user.id
+        session['username'] = user.username
+        return redirect(url_for('index'))
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+@app.route('/send_message', methods=['POST'])
+@login_required
+def send_message():
+    message = request.json.get('message')
+    if not message:
+        return jsonify({'error': 'لا توجد رسالة'}), 400
+    
+    # حفظ الرسالة في قاعدة البيانات
+    new_message = Message(
+        user_id=session['user_id'],
+        content=message
+    )
+    db.session.add(new_message)
+    db.session.commit()
+    
+    # إرسال الرد
+    response = get_medical_response(message)
+    return jsonify({'response': response})
+
+def get_medical_response(message):
+    message = message.strip()
+    for keyword, response in medical_responses.items():
+        if keyword in message:
+            return response
+    return """
+    مرحباً! أنا المساعد الطبي الخاص بك. كيف يمكنني مساعدتك؟
+    
+    يمكنني تقديم معلومات عن:
+    - الأعراض الشائعة
+    - النصائح الطبية العامة
+    - الإسعافات الأولية
+    - متى يجب زيارة الطبيب
+    
+    الرجاء وصف ما تشعر به بالتفصيل.
+    """
+
+@app.route('/upload_image', methods=['POST'])
+@login_required
+def upload_image():
+    if 'file' not in request.files:
+        return jsonify({'error': 'لم يتم إرسال صورة'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'لم يتم اختيار صورة'}), 400
+    
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        # هنا يمكن إضافة خوارزمية للتعرف على الدواء من الصورة
+        medication_name = "بانادول"
+        
+        medication_info = get_medication_info(medication_name)
+        return jsonify({
+            'response': medication_info,
+            'filename': filename
+        })
+    
+    return jsonify({'error': 'نوع الملف غير مسموح به'}), 400
 
 def get_medication_info(medication_name):
     if medication_name in medications_info:
@@ -174,133 +259,21 @@ def get_medication_info(medication_name):
         return response
     return "عذراً، لا تتوفر معلومات عن هذا الدواء"
 
-def get_medical_response(message):
-    message = message.strip()
-    for keyword, response in medical_responses.items():
-        if keyword in message:
-            return response
-    return """
-    مرحباً! أنا المساعد الطبي الخاص بك. كيف يمكنني مساعدتك؟
-    
-    يمكنني تقديم معلومات عن:
-    - الأعراض الشائعة
-    - النصائح الطبية العامة
-    - الإسعافات الأولية
-    - متى يجب زيارة الطبيب
-    
-    الرجاء وصف ما تشعر به بالتفصيل.
-    """
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template('error.html', error='الصفحة غير موجودة'), 404
 
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated_function
-
-@app.route('/')
-@login_required
-def index():
-    return render_template('index.html', username=session.get('username'))
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        
-        db = get_db()
-        error = None
-
-        if not username:
-            error = 'اسم المستخدم مطلوب'
-        elif not password:
-            error = 'كلمة المرور مطلوبة'
-        elif db.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone() is not None:
-            error = 'المستخدم {} موجود بالفعل'.format(username)
-
-        if error is None:
-            db.execute('INSERT INTO users (username, password) VALUES (?, ?)',
-                      (username, generate_password_hash(password)))
-            db.commit()
-            return redirect(url_for('login'))
-
-        flash(error)
-
-    return render_template('register.html')
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        
-        db = get_db()
-        error = None
-        
-        user = db.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
-
-        if user is None:
-            error = 'اسم المستخدم غير صحيح'
-        elif not check_password_hash(user['password'], password):
-            error = 'كلمة المرور غير صحيحة'
-
-        if error is None:
-            session.clear()
-            session['user_id'] = user['id']
-            session['username'] = user['username']
-            return redirect(url_for('index'))
-
-        flash(error)
-
-    return render_template('login.html')
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('login'))
-
-@app.route('/send_message', methods=['POST'])
-@login_required
-def send_message():
-    message = request.json.get('message')
-    if message:
-        response = get_medical_response(message)
-        return jsonify({'response': response})
-    return jsonify({'error': 'لا توجد رسالة'}), 400
-
-@app.route('/upload_image', methods=['POST'])
-@login_required
-def upload_image():
-    if 'file' not in request.files:
-        return jsonify({'error': 'لم يتم إرسال صورة'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'لم يتم اختيار صورة'}), 400
-    
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        
-        # هنا يمكن إضافة خوارزمية للتعرف على الدواء من الصورة
-        # حالياً سنفترض أنه بانادول كمثال
-        medication_name = "بانادول"
-        
-        medication_info = get_medication_info(medication_name)
-        return jsonify({
-            'response': medication_info,
-            'filename': filename
-        })
-    
-    return jsonify({'error': 'نوع الملف غير مسموح به'}), 400
+@app.errorhandler(500)
+def internal_error(error):
+    db.session.rollback()
+    app.logger.error(f'Server Error: {error}')
+    return render_template('error.html', error='حدث خطأ في الخادم'), 500
 
 if __name__ == '__main__':
+    # إعداد التسجيل
     logging.basicConfig(level=logging.INFO)
     app.logger.setLevel(logging.INFO)
-    if not os.path.exists('database.db'):
-        init_db()
-    port = int(os.environ.get('PORT', 5000))
+    
+    # تشغيل التطبيق
+    port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
