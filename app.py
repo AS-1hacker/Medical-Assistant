@@ -259,6 +259,16 @@ def get_medication_info(medication_name):
         return response
     return "عذراً، لا تتوفر معلومات عن هذا الدواء"
 
+@app.route('/health')
+def health_check():
+    try:
+        # اختبار الاتصال بقاعدة البيانات
+        db.session.execute('SELECT 1')
+        return jsonify({'status': 'healthy'}), 200
+    except Exception as e:
+        app.logger.error(f'Health check failed: {e}')
+        return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
+
 @app.errorhandler(404)
 def not_found_error(error):
     return render_template('error.html', error='الصفحة غير موجودة'), 404
