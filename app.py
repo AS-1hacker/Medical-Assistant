@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
+from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import sqlite3
@@ -6,6 +7,7 @@ import os
 from functools import wraps
 
 app = Flask(__name__)
+CORS(app)  # إضافة دعم CORS
 app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key')
 
 # تكوين مجلد الصور
