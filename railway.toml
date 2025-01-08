@@ -2,10 +2,9 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "flask run --host=0.0.0.0 --port=$PORT"
-healthcheckPath = "/health"
-healthcheckTimeout = 10
-restartPolicyType = "ON_FAILURE"
+startCommand = "python app.py"
+healthcheckPath = "/"
+healthcheckTimeout = 1
 
 [service]
 internal_port = 8080
